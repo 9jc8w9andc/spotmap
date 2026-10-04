@@ -3,8 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Spotmap</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<title>Spotmap (Google Maps)</title>
 <style>
 :root{--bg:#fff;--ink:#16181d;--mute:#6b7280;--line:#e5e7eb;--soft:#f4f5f7;--acc:#2f3bd6}
 @media (prefers-color-scheme:dark){:root{--bg:#15171c;--ink:#eceef2;--mute:#99a0ad;--line:#2a2e37;--soft:#1e2128;--acc:#7c88ff}}
@@ -56,12 +55,14 @@ input[type=color]{width:34px;height:30px;border:1px solid var(--line);border-rad
 .dir a{text-align:center;text-decoration:none;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 2px;font-size:12px}
 .dir a:hover{background:var(--soft)}
 .pill{display:inline-block;background:var(--soft);border-radius:99px;padding:2px 9px;font-size:12px;margin:2px 3px 0 0}
-.leaflet-container{font:inherit}
 @media(max-width:700px){
  #app{flex-direction:column-reverse}
  #side{width:100%;height:42%;border-right:0;border-top:1px solid var(--line)}
  #fab{bottom:14px}
 }
+#setup{display:none;position:absolute;inset:0;z-index:1100;background:var(--bg);align-items:center;justify-content:center;padding:16px;overflow:auto}
+#setup .card{max-width:440px}#setup h2{margin:0 0 8px}#setup ol{padding-left:18px;color:var(--mute)}#setup li{margin-bottom:6px}
+#gmap{z-index:0}
 </style>
 </head>
 <body>
@@ -75,8 +76,15 @@ input[type=color]{width:34px;height:30px;border:1px solid var(--line);border-rad
   <div id="list"></div>
   <div id="foot"><button id="exp">Export</button><button id="imp">Import</button><input type="file" id="file" accept=".json" hidden></div>
  </aside>
- <div id="map" style="position:relative">
-  <div id="toast"></div>
+ <div id="map" style="position:relative"><div id="gmap" style="position:absolute;inset:0"></div>
+  <div id="setup"><div class="card"><h2>Connect Google Maps</h2>
+<p>Spotmap needs a free Google Maps API key. You only do this once.</p>
+<ol><li>Go to console.cloud.google.com and create a project. Turn on billing (Google gives a monthly free credit).</li>
+<li>Enable <b>Maps JavaScript API</b> and <b>Geocoding API</b>.</li>
+<li>Create an API key under Credentials and paste it below.</li></ol>
+<p id="smsg" style="color:#e11d48"></p>
+<input type="text" id="kin" placeholder="Paste API key"><div class="row"><button id="ksave" class="pri">Save key</button></div></div></div>
+<div id="toast"></div>
   <div id="fab">
    <button id="loc" title="My location" aria-label="My location">◎</button>
    <button id="sat" title="Satellite" aria-label="Toggle satellite">▦</button>
@@ -94,45 +102,80 @@ input[type=color]{width:34px;height:30px;border:1px solid var(--line);border-rad
  <div class="row"><button id="del" style="margin-right:auto;display:none">Delete</button><button id="cancel">Cancel</button><button id="save" class="pri">Save spot</button></div>
 </dialog>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script>
 const COLORS=['#e11d48','#f97316','#eab308','#22c55e','#06b6d4','#2f3bd6','#a855f7','#ec4899'];
-const KEY='spotmap.v1';
+const KEY='spotmap.v1',KK='spotmap.gkey';
 let spots=[];try{spots=JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){}
 const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(spots))}catch(e){toast('Could not save in this browser')}};
 const $=id=>document.getElementById(id);
-const map=L.map('map',{zoomControl:false}).setView([20,0],2);
-L.control.zoom({position:'topright'}).addTo(map);
-const street=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'});
-const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Imagery © Esri'});
-street.addTo(map);let isSat=false;
-$('sat').onclick=()=>{isSat?(map.removeLayer(sat),street.addTo(map)):(map.removeLayer(street),sat.addTo(map));isSat=!isSat};
-
-const layers={};let activeTag=null,editing=null,pending=null,color=COLORS[0];
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 function toast(t,ms=3500){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);if(ms)toast.t=setTimeout(()=>e.style.display='none',ms)}
 const hide=()=>$('toast').style.display='none';
-const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const toBox=b=>({south:b[0][0],west:b[0][1],north:b[1][0],east:b[1][1]});
+const fromBox=bb=>[[bb.getSouth(),bb.getWest()],[bb.getNorth(),bb.getEast()]];
+const mk=(a,b)=>new google.maps.LatLngBounds().extend(a).extend(b);
 const center=b=>[(b[0][0]+b[1][0])/2,(b[0][1]+b[1][1])/2];
 
+let map,geocoder,layers={},activeTag=null,editing=null,pending=null,color=COLORS[0],isSat=false;
+let drawing=false,c1=null,prev=null,me=null,pin=null;
+
+// ---- setup: Google API key ----
+function setup(msg){
+  $('setup').style.display='flex';
+  $('smsg').textContent=msg||'';
+}
+$('ksave').onclick=()=>{
+  const k=$('kin').value.trim();if(!k)return;
+  try{localStorage.setItem(KK,k)}catch(e){}
+  location.reload();
+};
+window.gm_authFailure=()=>setup('Google rejected that key. Make sure Maps JavaScript API and Geocoding API are enabled and billing is on.');
+let gkey='';try{gkey=localStorage.getItem(KK)||''}catch(e){}
+render();
+if(!gkey)setup();
+else{
+  const s=document.createElement('script');
+  s.src='https://maps.googleapis.com/maps/api/js?key='+encodeURIComponent(gkey)+'&callback=initMap';
+  s.async=true;s.onerror=()=>setup('Could not reach Google Maps. Check your connection.');
+  document.head.appendChild(s);
+}
+
+window.initMap=()=>{
+  map=new google.maps.Map($('gmap'),{center:{lat:20,lng:0},zoom:2,disableDefaultUI:true,zoomControl:true,gestureHandling:'greedy',clickableIcons:false});
+  geocoder=new google.maps.Geocoder();
+  map.addListener('click',onClick);
+  map.addListener('mousemove',e=>{if(drawing&&c1&&prev)prev.setBounds(mk(c1,e.latLng))});
+  render();
+  if(spots.length){
+    const bb=new google.maps.LatLngBounds();
+    spots.forEach(s=>{bb.extend({lat:s.b[0][0],lng:s.b[0][1]});bb.extend({lat:s.b[1][0],lng:s.b[1][1]})});
+    map.fitBounds(bb,60);
+    google.maps.event.addListenerOnce(map,'idle',()=>{if(map.getZoom()>17)map.setZoom(17)});
+  }else locate(true);
+};
+
+// ---- render ----
 function render(){
-  Object.values(layers).forEach(l=>map.removeLayer(l));
+  Object.values(layers).forEach(l=>l.setMap(null));layers={};
   const q=$('q').value.toLowerCase();
   const all=[...new Set(spots.flatMap(s=>s.tags))].sort();
   $('tags').innerHTML=all.map(t=>`<span class="chip ${t===activeTag?'on':''}" data-t="${esc(t)}">${esc(t)}</span>`).join('');
   $('tags').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{activeTag=activeTag===c.dataset.t?null:c.dataset.t;render()});
   const vis=spots.filter(s=>(!activeTag||s.tags.includes(activeTag))&&(!q||(s.name+s.tags.join(' ')+s.notes).toLowerCase().includes(q)));
-  vis.forEach(s=>{
-    const r=L.rectangle(s.b,{color:s.color,weight:2,fillColor:s.color,fillOpacity:.25}).addTo(map);
-    r.on('click',e=>{L.DomEvent.stopPropagation(e);openSpot(s)});
-    r.bindTooltip(s.name,{sticky:true});layers[s.id]=r;
+  if(map)vis.forEach(s=>{
+    const r=new google.maps.Rectangle({map,bounds:toBox(s.b),strokeColor:s.color,strokeWeight:2,fillColor:s.color,fillOpacity:.25});
+    r.addListener('click',e=>drawing?onClick(e):openSpot(s));
+    layers[s.id]=r;
   });
   $('list').innerHTML=vis.length?vis.map(s=>`<div class="item" data-id="${s.id}"><span class="sw" style="background:${s.color}"></span><div><b>${esc(s.name)}</b><small>${s.tags.map(esc).join(', ')||'No tags'}</small></div></div>`).join(''):
    `<div class="empty">${spots.length?'No spots match.':'No spots yet. Tap “Mark area”, then tap two opposite corners on the map.'}</div>`;
-  $('list').querySelectorAll('.item').forEach(i=>i.onclick=()=>{const s=spots.find(x=>x.id===i.dataset.id);map.fitBounds(s.b,{maxZoom:18,padding:[40,40]});openSpot(s)});
+  $('list').querySelectorAll('.item').forEach(i=>i.onclick=()=>{
+    const s=spots.find(x=>x.id===i.dataset.id);
+    if(map)map.fitBounds(toBox(s.b),60);openSpot(s)});
 }
 $('q').oninput=render;
 
-// color picker
+// ---- dialog ----
 function buildCols(){
   $('cols').innerHTML=COLORS.map(c=>`<button type="button" class="col ${c===color?'on':''}" style="background:${c}" data-c="${c}" aria-label="Color ${c}"></button>`).join('')+`<input type="color" id="cc" value="${color}" aria-label="Custom color">`;
   $('cols').querySelectorAll('.col').forEach(b=>b.onclick=()=>{color=b.dataset.c;buildCols()});
@@ -144,14 +187,15 @@ function openDlg(s,b){
   $('nm').value=s?s.name:'';$('tg').value=s?s.tags.join(', '):'';$('nt').value=s?s.notes:'';
   $('del').style.display=s?'':'none';buildCols();
   const [la,ln]=center(b);
+  const u=m=>`https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=${m}`;
   $('dinfo').innerHTML=`<label>Directions</label><div class="dir">
-   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=walking">Walk</a>
-   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving">Car</a>
-   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=bicycling">Bike</a>
-   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=transit">Transit</a></div>`;
+   <a target="_blank" rel="noopener" href="${u('walking')}">Walk</a>
+   <a target="_blank" rel="noopener" href="${u('driving')}">Car</a>
+   <a target="_blank" rel="noopener" href="${u('bicycling')}">Bike</a>
+   <a target="_blank" rel="noopener" href="${u('transit')}">Transit</a></div>`;
   $('dlg').showModal();$('nm').focus();
 }
-function openSpot(s){openDlg(s,s.b)}
+const openSpot=s=>openDlg(s,s.b);
 $('cancel').onclick=()=>{$('dlg').close();if(!editing)clearPreview()};
 $('save').onclick=()=>{
   const name=$('nm').value.trim();if(!name){$('nm').focus();return}
@@ -162,59 +206,62 @@ $('save').onclick=()=>{
 };
 $('del').onclick=()=>{if(confirm('Delete this spot?')){spots=spots.filter(s=>s!==editing);persist();$('dlg').close();render()}};
 
-// drawing: tap two corners
-let drawing=false,c1=null,prev=null;
-function clearPreview(){if(prev){map.removeLayer(prev);prev=null}c1=null;drawing=false;$('draw').textContent='+ Mark area';map.getContainer().style.cursor='';hide()}
+// ---- drawing: tap two corners ----
+function clearPreview(){
+  if(prev){prev.setMap(null);prev=null}c1=null;drawing=false;
+  $('draw').textContent='+ Mark area';if(map)map.setOptions({draggableCursor:null});hide();
+}
 $('draw').onclick=()=>{
+  if(!map)return;
   if(drawing){clearPreview();return}
-  drawing=true;$('draw').textContent='Cancel';map.getContainer().style.cursor='crosshair';toast('Tap the first corner of the area',0);
+  drawing=true;$('draw').textContent='Cancel';map.setOptions({draggableCursor:'crosshair'});toast('Tap the first corner of the area',0);
 };
-map.on('click',e=>{
+function onClick(e){
   if(!drawing)return;
-  if(!c1){c1=e.latlng;prev=L.rectangle([c1,c1],{color:'#2f3bd6',weight:2,dashArray:'5'}).addTo(map);toast('Now tap the opposite corner',0);return}
-  const b=L.latLngBounds(c1,e.latlng);
-  const arr=[[b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]];
-  prev.setBounds(b);drawing=false;$('draw').textContent='+ Mark area';map.getContainer().style.cursor='';hide();openDlg(null,arr);
-});
-map.on('mousemove',e=>{if(drawing&&c1&&prev)prev.setBounds(L.latLngBounds(c1,e.latlng))});
+  const ll=e.latLng;
+  if(!c1){
+    c1=ll;prev=new google.maps.Rectangle({map,bounds:mk(ll,ll),strokeColor:'#2f3bd6',strokeWeight:2,fillOpacity:.1,clickable:false});
+    toast('Now tap the opposite corner',0);return;
+  }
+  const bb=mk(c1,ll);prev.setBounds(bb);
+  drawing=false;$('draw').textContent='+ Mark area';map.setOptions({draggableCursor:null});hide();
+  openDlg(null,fromBox(bb));
+}
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&drawing)clearPreview()});
 
-// location + search
-let me=null;
+// ---- location, satellite ----
 function locate(first){
   if(!navigator.geolocation){toast('Location is not supported here');return}
   navigator.geolocation.getCurrentPosition(p=>{
-    const ll=[p.coords.latitude,p.coords.longitude];
-    map.setView(ll,first?14:16);
-    if(me)me.setLatLng(ll);else me=L.circleMarker(ll,{radius:8,color:'#fff',weight:3,fillColor:'#2f80ed',fillOpacity:1}).addTo(map);
+    const ll={lat:p.coords.latitude,lng:p.coords.longitude};
+    map.setCenter(ll);map.setZoom(first?14:16);
+    if(me)me.setPosition(ll);else me=new google.maps.Marker({map,position:ll,clickable:false,icon:{path:google.maps.SymbolPath.CIRCLE,scale:8,fillColor:'#2f80ed',fillOpacity:1,strokeColor:'#fff',strokeWeight:3}});
   },()=>{if(!first)toast('Allow location access in your browser to use this')},{enableHighAccuracy:true,timeout:10000});
 }
-$('loc').onclick=()=>locate(false);
+$('loc').onclick=()=>map&&locate(false);
+$('sat').onclick=()=>{if(!map)return;isSat=!isSat;map.setMapTypeId(isSat?'hybrid':'roadmap')};
 
-// address / place search (OpenStreetMap Nominatim, no key needed)
-let pin=null;
+// ---- address search (Google Geocoding) ----
 function showRes(h){const r=$('res');r.innerHTML=h;r.style.display=h?'block':'none'}
 $('addr').addEventListener('keydown',async e=>{
-  if(e.key!=='Enter')return;
+  if(e.key!=='Enter'||!map)return;
   const t=e.target.value.trim();if(!t)return showRes('');
   showRes('<div>Searching…</div>');
   try{
-    const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q='+encodeURIComponent(t));
-    const d=await r.json();
-    if(!d.length)return showRes('<div>No results. Try adding a city or country.</div>');
-    showRes(d.map((p,i)=>`<div data-i="${i}">${esc(p.display_name)}</div>`).join(''));
+    const {results}=await geocoder.geocode({address:t});
+    const d=results.slice(0,5);
+    showRes(d.map((p,i)=>`<div data-i="${i}">${esc(p.formatted_address)}</div>`).join(''));
     $('res').querySelectorAll('div').forEach(el=>el.onclick=()=>{
-      const p=d[el.dataset.i],ll=[+p.lat,+p.lon];
-      const bb=p.boundingbox.map(Number);
-      map.fitBounds([[bb[0],bb[2]],[bb[1],bb[3]]],{maxZoom:18});
-      if(pin)map.removeLayer(pin);
-      pin=L.circleMarker(ll,{radius:7,color:'#fff',weight:3,fillColor:'#e11d48',fillOpacity:1}).addTo(map);
+      const p=d[el.dataset.i];
+      if(p.geometry.viewport)map.fitBounds(p.geometry.viewport);else{map.setCenter(p.geometry.location);map.setZoom(17)}
+      if(pin)pin.setMap(null);
+      pin=new google.maps.Marker({map,position:p.geometry.location,title:p.formatted_address});
       showRes('');
     });
-  }catch(err){showRes('<div>Search failed. Check your connection and try again.</div>')}
+  }catch(err){showRes('<div>No results. Try adding a city or country.</div>')}
 });
 
-// import / export (how friends share spots)
+// ---- export / import (same format as the OpenStreetMap version) ----
 $('exp').onclick=()=>{
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(spots,null,1)],{type:'application/json'}));
   a.download='spotmap-spots.json';a.click();
@@ -229,9 +276,6 @@ $('file').onchange=async e=>{
   }catch(err){toast('That file is not a valid spots export')}
   e.target.value='';
 };
-
-render();
-if(spots.length)map.fitBounds(spots.flatMap(s=>s.b),{padding:[50,50],maxZoom:16});else locate(true);
 </script>
 </body>
 </html>
