@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spotmap</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+:root{--bg:#fff;--ink:#16181d;--mute:#6b7280;--line:#e5e7eb;--soft:#f4f5f7;--acc:#2f3bd6}
+@media (prefers-color-scheme:dark){:root{--bg:#15171c;--ink:#eceef2;--mute:#99a0ad;--line:#2a2e37;--soft:#1e2128;--acc:#7c88ff}}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink)}
+#app{display:flex;height:100%}
+#side{width:340px;display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg);z-index:500}
+#map{flex:1;min-width:0}
+header{padding:16px 16px 8px;display:flex;align-items:center;justify-content:space-between}
+h1{font-size:18px;margin:0;letter-spacing:-.02em}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer;border:1px solid var(--line);background:var(--bg);border-radius:8px;padding:7px 11px}
+button:hover{background:var(--soft)}
+button.pri{background:var(--acc);border-color:var(--acc);color:#fff}
+button.pri:hover{filter:brightness(1.1)}
+button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px solid var(--acc);outline-offset:1px}
+.bar{padding:0 16px 10px;display:flex;gap:8px}
+.bar>*{flex:1}
+input[type=text],textarea{width:100%;border:1px solid var(--line);background:var(--soft);border-radius:8px;padding:8px 10px}
+#tags{padding:0 16px 8px;display:flex;flex-wrap:wrap;gap:6px}
+.chip{border-radius:99px;padding:3px 10px;font-size:12px;background:var(--soft);border:1px solid var(--line);cursor:pointer}
+.chip.on{background:var(--acc);color:#fff;border-color:var(--acc)}
+#list{flex:1;overflow:auto;border-top:1px solid var(--line)}
+.item{display:flex;gap:10px;padding:12px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+.item:hover{background:var(--soft)}
+.sw{width:12px;height:12px;border-radius:3px;margin-top:4px;flex:none}
+.item b{display:block}
+.item small{color:var(--mute)}
+.empty{padding:24px 16px;color:var(--mute)}
+#foot{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px}
+#foot button{flex:1;font-size:12px}
+#fab{position:absolute;right:14px;bottom:24px;z-index:1000;display:flex;flex-direction:column;gap:8px}
+#fab button{box-shadow:0 2px 8px rgba(0,0,0,.2);background:var(--bg);width:44px;height:44px;padding:0;font-size:18px}
+#toast{position:absolute;top:14px;left:50%;transform:translateX(-50%);z-index:1000;background:var(--ink);color:var(--bg);padding:9px 16px;border-radius:99px;display:none;max-width:90%;text-align:center}
+dialog{border:1px solid var(--line);border-radius:14px;background:var(--bg);color:var(--ink);padding:20px;width:min(420px,92vw)}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog h2{margin:0 0 12px;font-size:16px}
+label{display:block;font-size:12px;color:var(--mute);margin:12px 0 4px}
+.cols{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.col{width:28px;height:28px;border-radius:50%;border:3px solid transparent;padding:0}
+.col.on{border-color:var(--ink)}
+input[type=color]{width:34px;height:30px;border:1px solid var(--line);border-radius:8px;padding:2px;background:var(--bg)}
+.row{display:flex;gap:8px;margin-top:16px;justify-content:flex-end}
+.dir{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:6px}
+.dir a{text-align:center;text-decoration:none;color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:7px 2px;font-size:12px}
+.dir a:hover{background:var(--soft)}
+.pill{display:inline-block;background:var(--soft);border-radius:99px;padding:2px 9px;font-size:12px;margin:2px 3px 0 0}
+.leaflet-container{font:inherit}
+@media(max-width:700px){
+ #app{flex-direction:column-reverse}
+ #side{width:100%;height:42%;border-right:0;border-top:1px solid var(--line)}
+ #fab{bottom:14px}
+}
+</style>
+</head>
+<body>
+<div id="app">
+ <aside id="side">
+  <header><h1>Spotmap</h1><button id="draw" class="pri">+ Mark area</button></header>
+  <div class="bar"><input type="text" id="q" placeholder="Search your spots" aria-label="Search your spots"></div>
+  <div id="tags"></div>
+  <div id="list"></div>
+  <div id="foot"><button id="exp">Export</button><button id="imp">Import</button><input type="file" id="file" accept=".json" hidden></div>
+ </aside>
+ <div id="map" style="position:relative">
+  <div id="toast"></div>
+  <div id="fab">
+   <button id="loc" title="My location" aria-label="My location">◎</button>
+   <button id="sat" title="Satellite" aria-label="Toggle satellite">▦</button>
+  </div>
+ </div>
+</div>
+
+<dialog id="dlg">
+ <h2 id="dt">New spot</h2>
+ <label for="nm">Name</label><input type="text" id="nm" placeholder="Old mill, east wing">
+ <label for="tg">Tags (comma separated)</label><input type="text" id="tg" placeholder="factory, rooftop, easy access">
+ <label>Color</label><div class="cols" id="cols"></div>
+ <label for="nt">Notes</label><textarea id="nt" rows="3" placeholder="Best time, entry, hazards"></textarea>
+ <div id="dinfo"></div>
+ <div class="row"><button id="del" style="margin-right:auto;display:none">Delete</button><button id="cancel">Cancel</button><button id="save" class="pri">Save spot</button></div>
+</dialog>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+const COLORS=['#e11d48','#f97316','#eab308','#22c55e','#06b6d4','#2f3bd6','#a855f7','#ec4899'];
+const KEY='spotmap.v1';
+let spots=[];try{spots=JSON.parse(localStorage.getItem(KEY)||'[]')}catch(e){}
+const persist=()=>{try{localStorage.setItem(KEY,JSON.stringify(spots))}catch(e){toast('Could not save in this browser')}};
+const $=id=>document.getElementById(id);
+const map=L.map('map',{zoomControl:false}).setView([20,0],2);
+L.control.zoom({position:'topright'}).addTo(map);
+const street=L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap'});
+const sat=L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{maxZoom:19,attribution:'Imagery © Esri'});
+street.addTo(map);let isSat=false;
+$('sat').onclick=()=>{isSat?(map.removeLayer(sat),street.addTo(map)):(map.removeLayer(street),sat.addTo(map));isSat=!isSat};
+
+const layers={};let activeTag=null,editing=null,pending=null,color=COLORS[0];
+function toast(t,ms=3500){const e=$('toast');e.textContent=t;e.style.display='block';clearTimeout(toast.t);if(ms)toast.t=setTimeout(()=>e.style.display='none',ms)}
+const hide=()=>$('toast').style.display='none';
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const center=b=>[(b[0][0]+b[1][0])/2,(b[0][1]+b[1][1])/2];
+
+function render(){
+  Object.values(layers).forEach(l=>map.removeLayer(l));
+  const q=$('q').value.toLowerCase();
+  const all=[...new Set(spots.flatMap(s=>s.tags))].sort();
+  $('tags').innerHTML=all.map(t=>`<span class="chip ${t===activeTag?'on':''}" data-t="${esc(t)}">${esc(t)}</span>`).join('');
+  $('tags').querySelectorAll('.chip').forEach(c=>c.onclick=()=>{activeTag=activeTag===c.dataset.t?null:c.dataset.t;render()});
+  const vis=spots.filter(s=>(!activeTag||s.tags.includes(activeTag))&&(!q||(s.name+s.tags.join(' ')+s.notes).toLowerCase().includes(q)));
+  vis.forEach(s=>{
+    const r=L.rectangle(s.b,{color:s.color,weight:2,fillColor:s.color,fillOpacity:.25}).addTo(map);
+    r.on('click',e=>{L.DomEvent.stopPropagation(e);openSpot(s)});
+    r.bindTooltip(s.name,{sticky:true});layers[s.id]=r;
+  });
+  $('list').innerHTML=vis.length?vis.map(s=>`<div class="item" data-id="${s.id}"><span class="sw" style="background:${s.color}"></span><div><b>${esc(s.name)}</b><small>${s.tags.map(esc).join(', ')||'No tags'}</small></div></div>`).join(''):
+   `<div class="empty">${spots.length?'No spots match.':'No spots yet. Tap “Mark area”, then tap two opposite corners on the map.'}</div>`;
+  $('list').querySelectorAll('.item').forEach(i=>i.onclick=()=>{const s=spots.find(x=>x.id===i.dataset.id);map.fitBounds(s.b,{maxZoom:18,padding:[40,40]});openSpot(s)});
+}
+$('q').oninput=render;
+
+// color picker
+function buildCols(){
+  $('cols').innerHTML=COLORS.map(c=>`<button type="button" class="col ${c===color?'on':''}" style="background:${c}" data-c="${c}" aria-label="Color ${c}"></button>`).join('')+`<input type="color" id="cc" value="${color}" aria-label="Custom color">`;
+  $('cols').querySelectorAll('.col').forEach(b=>b.onclick=()=>{color=b.dataset.c;buildCols()});
+  $('cc').oninput=e=>{color=e.target.value;$('cols').querySelectorAll('.col').forEach(b=>b.classList.remove('on'))};
+}
+function openDlg(s,b){
+  editing=s||null;pending=b;color=s?s.color:COLORS[Math.floor(Math.random()*COLORS.length)];
+  $('dt').textContent=s?'Edit spot':'New spot';
+  $('nm').value=s?s.name:'';$('tg').value=s?s.tags.join(', '):'';$('nt').value=s?s.notes:'';
+  $('del').style.display=s?'':'none';buildCols();
+  const [la,ln]=center(b);
+  $('dinfo').innerHTML=`<label>Directions</label><div class="dir">
+   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=walking">Walk</a>
+   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=driving">Car</a>
+   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=bicycling">Bike</a>
+   <a target="_blank" rel="noopener" href="https://www.google.com/maps/dir/?api=1&destination=${la},${ln}&travelmode=transit">Transit</a></div>`;
+  $('dlg').showModal();$('nm').focus();
+}
+function openSpot(s){openDlg(s,s.b)}
+$('cancel').onclick=()=>{$('dlg').close();if(!editing)clearPreview()};
+$('save').onclick=()=>{
+  const name=$('nm').value.trim();if(!name){$('nm').focus();return}
+  const tags=$('tg').value.split(',').map(t=>t.trim().toLowerCase()).filter(Boolean);
+  const data={name,tags:[...new Set(tags)],notes:$('nt').value.trim(),color,b:pending};
+  if(editing)Object.assign(editing,data);else spots.push({id:Date.now().toString(36)+Math.random().toString(36).slice(2,5),...data});
+  persist();$('dlg').close();clearPreview();render();
+};
+$('del').onclick=()=>{if(confirm('Delete this spot?')){spots=spots.filter(s=>s!==editing);persist();$('dlg').close();render()}};
+
+// drawing: tap two corners
+let drawing=false,c1=null,prev=null;
+function clearPreview(){if(prev){map.removeLayer(prev);prev=null}c1=null;drawing=false;$('draw').textContent='+ Mark area';map.getContainer().style.cursor='';hide()}
+$('draw').onclick=()=>{
+  if(drawing){clearPreview();return}
+  drawing=true;$('draw').textContent='Cancel';map.getContainer().style.cursor='crosshair';toast('Tap the first corner of the area',0);
+};
+map.on('click',e=>{
+  if(!drawing)return;
+  if(!c1){c1=e.latlng;prev=L.rectangle([c1,c1],{color:'#2f3bd6',weight:2,dashArray:'5'}).addTo(map);toast('Now tap the opposite corner',0);return}
+  const b=L.latLngBounds(c1,e.latlng);
+  const arr=[[b.getSouth(),b.getWest()],[b.getNorth(),b.getEast()]];
+  prev.setBounds(b);drawing=false;$('draw').textContent='+ Mark area';map.getContainer().style.cursor='';hide();openDlg(null,arr);
+});
+map.on('mousemove',e=>{if(drawing&&c1&&prev)prev.setBounds(L.latLngBounds(c1,e.latlng))});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&drawing)clearPreview()});
+
+// location + search
+let me=null;
+function locate(first){
+  if(!navigator.geolocation){toast('Location is not supported here');return}
+  navigator.geolocation.getCurrentPosition(p=>{
+    const ll=[p.coords.latitude,p.coords.longitude];
+    map.setView(ll,first?14:16);
+    if(me)me.setLatLng(ll);else me=L.circleMarker(ll,{radius:8,color:'#fff',weight:3,fillColor:'#2f80ed',fillOpacity:1}).addTo(map);
+  },()=>{if(!first)toast('Allow location access in your browser to use this')},{enableHighAccuracy:true,timeout:10000});
+}
+$('loc').onclick=()=>locate(false);
+
+// import / export (how friends share spots)
+$('exp').onclick=()=>{
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([JSON.stringify(spots,null,1)],{type:'application/json'}));
+  a.download='spotmap-spots.json';a.click();
+};
+$('imp').onclick=()=>$('file').click();
+$('file').onchange=async e=>{
+  try{
+    const inc=JSON.parse(await e.target.files[0].text());
+    const ids=new Set(spots.map(s=>s.id));let n=0;
+    inc.forEach(s=>{if(s&&s.id&&s.b&&!ids.has(s.id)){spots.push({tags:[],notes:'',color:COLORS[0],...s});n++}});
+    persist();render();toast(`Imported ${n} new spot${n===1?'':'s'}`);
+  }catch(err){toast('That file is not a valid spots export')}
+  e.target.value='';
+};
+
+render();
+if(spots.length)map.fitBounds(spots.flatMap(s=>s.b),{padding:[50,50],maxZoom:16});else locate(true);
+</script>
+</body>
+</html>
