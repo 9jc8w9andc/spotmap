@@ -34,6 +34,10 @@ input[type=text],textarea{width:100%;border:1px solid var(--line);background:var
 .item b{display:block}
 .item small{color:var(--mute)}
 .empty{padding:24px 16px;color:var(--mute)}
+#res{margin:-4px 16px 10px;border:1px solid var(--line);border-radius:8px;overflow:hidden;display:none}
+#res div{padding:8px 10px;cursor:pointer;font-size:13px;border-bottom:1px solid var(--line)}
+#res div:last-child{border-bottom:0}
+#res div:hover{background:var(--soft)}
 #foot{padding:10px 16px;border-top:1px solid var(--line);display:flex;gap:8px}
 #foot button{flex:1;font-size:12px}
 #fab{position:absolute;right:14px;bottom:24px;z-index:1000;display:flex;flex-direction:column;gap:8px}
@@ -64,6 +68,8 @@ input[type=color]{width:34px;height:30px;border:1px solid var(--line);border-rad
 <div id="app">
  <aside id="side">
   <header><h1>Spotmap</h1><button id="draw" class="pri">+ Mark area</button></header>
+  <div class="bar"><input type="text" id="addr" placeholder="Find an address or place" aria-label="Find an address or place"></div>
+  <div id="res"></div>
   <div class="bar"><input type="text" id="q" placeholder="Search your spots" aria-label="Search your spots"></div>
   <div id="tags"></div>
   <div id="list"></div>
@@ -184,6 +190,29 @@ function locate(first){
   },()=>{if(!first)toast('Allow location access in your browser to use this')},{enableHighAccuracy:true,timeout:10000});
 }
 $('loc').onclick=()=>locate(false);
+
+// address / place search (OpenStreetMap Nominatim, no key needed)
+let pin=null;
+function showRes(h){const r=$('res');r.innerHTML=h;r.style.display=h?'block':'none'}
+$('addr').addEventListener('keydown',async e=>{
+  if(e.key!=='Enter')return;
+  const t=e.target.value.trim();if(!t)return showRes('');
+  showRes('<div>Searching…</div>');
+  try{
+    const r=await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=5&q='+encodeURIComponent(t));
+    const d=await r.json();
+    if(!d.length)return showRes('<div>No results. Try adding a city or country.</div>');
+    showRes(d.map((p,i)=>`<div data-i="${i}">${esc(p.display_name)}</div>`).join(''));
+    $('res').querySelectorAll('div').forEach(el=>el.onclick=()=>{
+      const p=d[el.dataset.i],ll=[+p.lat,+p.lon];
+      const bb=p.boundingbox.map(Number);
+      map.fitBounds([[bb[0],bb[2]],[bb[1],bb[3]]],{maxZoom:18});
+      if(pin)map.removeLayer(pin);
+      pin=L.circleMarker(ll,{radius:7,color:'#fff',weight:3,fillColor:'#e11d48',fillOpacity:1}).addTo(map);
+      showRes('');
+    });
+  }catch(err){showRes('<div>Search failed. Check your connection and try again.</div>')}
+});
 
 // import / export (how friends share spots)
 $('exp').onclick=()=>{
